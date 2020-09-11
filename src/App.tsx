@@ -13,7 +13,11 @@ import { LatLngBounds, LeafletMouseEvent } from "leaflet";
 import { createMuiTheme, ThemeProvider } from "@material-ui/core/styles";
 import { throttle, debounce } from "lodash";
 import Button from "@material-ui/core/Button";
+import FormControlLabel from "@material-ui/core/FormControlLabel";
+import Switch from "@material-ui/core/Switch";
 const togpx = require("togpx");
+
+const RADI_GREEN = "#2b9847";
 
 const SOUTH_WEST = {
   lng: 10.334022,
@@ -27,7 +31,7 @@ const MAP_BOUNDS = new LatLngBounds(SOUTH_WEST, NORTH_EAST);
 const RADI_THEME = createMuiTheme({
   palette: {
     primary: {
-      main: "#2b9847",
+      main: RADI_GREEN,
     },
   },
 });
@@ -165,6 +169,7 @@ function App() {
     lng: number;
   } | null>(null);
   const [menuMinimized, setMenuMinimized] = useState<boolean>(false);
+  const [isRoadbike, setIsRoadbike] = useState<boolean>(false);
 
   const autocompleteStart = useCallback(
     debounce((value) => {
@@ -191,7 +196,9 @@ function App() {
   }, 500);
 
   const dragEndPosition = throttle(() => {
+    console.log("drag!");
     const pos = endMarkerRef.current?.leafletElement.getLatLng();
+    console.log("pos", pos);
     if (pos) {
       routeToHere(pos);
     }
@@ -276,10 +283,14 @@ function App() {
   );
 
   const calculateRoute = useCallback(
-    throttle((startPosition, endPosition) => {
+    throttle((startPosition, endPosition, isRoadbike: boolean) => {
       if (startPosition && endPosition) {
         fetch(
-          `https://routing.floschnell.de/route/v1/bike/${startPosition.lon},${startPosition.lat}%3b${endPosition.lon},${endPosition.lat}%3Foverview=full&alternatives=true&steps=true&geometries=geojson&annotations=true`
+          `https://routing.floschnell.de/route/v1/${
+            isRoadbike ? "roadbike" : "citybike"
+          }/${startPosition.lon},${startPosition.lat}%3b${endPosition.lon},${
+            endPosition.lat
+          }%3Foverview=full&alternatives=true&steps=true&geometries=geojson&annotations=true`
         )
           .then((response) => response.json())
           .then((results) => {
@@ -359,10 +370,15 @@ function App() {
     closeContextMenu();
   }, []);
 
-  useEffect(() => calculateRoute(startPosition, endPosition), [
+  useEffect(() => calculateRoute(startPosition, endPosition, isRoadbike), [
     startPosition,
     endPosition,
+    isRoadbike,
   ]);
+
+  const handleRoadbikeSwitch = (e: any) => {
+    setIsRoadbike(e.target.checked);
+  };
 
   let surfacesElement = null;
 
@@ -417,7 +433,7 @@ function App() {
         lng: tuple[0],
       })
     );
-    return <Polyline positions={coords}></Polyline>;
+    return <Polyline positions={coords} color={RADI_GREEN}></Polyline>;
   };
 
   return (
@@ -448,6 +464,20 @@ function App() {
         <div className={`routing ${menuMinimized ? "routing--minimized" : ""}`}>
           <div className="menu-toggle" onClick={toggleMenu}></div>
           <img src="logo.png" width="320" height="154" alt="Radi Logo"></img>
+          <FormControlLabel
+            style={{
+              margin: "0 auto",
+            }}
+            control={
+              <Switch
+                checked={isRoadbike}
+                onChange={handleRoadbikeSwitch}
+                name="isRoadbike"
+                color="primary"
+              />
+            }
+            label="ich fahre ein Rennrad"
+          />
           <Autocomplete
             id="start"
             filterOptions={(x) => x}

@@ -5,23 +5,39 @@
   z-index: 0;
 }
 
+.marker-icon {
+  font-family: 'FontAwesome';
+  color: green;
+  font-size: 40px;
+  text-shadow: white 0px 0px 11px, black 4px -3px 7px;
+}
+
 .routing .menu-toggle {
-  width: 30px;
-  min-height: 30px;
   position: absolute;
-  left: 5px;
-  top: 5px;
-  background-image: url(./collapse.png);
+  left: -20px;
+  top: -20px;
+  display: inline-block;
+  border-left: 20px solid transparent;
+  border-right: 20px solid gray;
+  border-top: 20px solid transparent;
+  border-bottom: 20px solid transparent;
+  transform: rotate(45deg);
+  cursor: pointer;
 }
 
 .routing.routing--minimized {
-  max-width: 60px;
-  max-height: 60px;
+  max-width: 55px;
+  max-height: 55px;
   background: white;
 }
 
 .routing.routing--minimized .menu-toggle {
-  background-image: url(./expand.png);
+  left: 15px;
+  top: 15px;
+  border-left: 20px solid grey;
+  border-right: 20px solid transparent;
+  border-top: 20px solid transparent;
+  border-bottom: 20px solid transparent;
 }
 
 .routing {
