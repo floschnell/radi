@@ -13,11 +13,10 @@ import { LatLngBounds, LeafletMouseEvent } from "leaflet";
 import { createMuiTheme, ThemeProvider } from "@material-ui/core/styles";
 import { throttle, debounce } from "lodash";
 import Button from "@material-ui/core/Button";
-import FormControlLabel from "@material-ui/core/FormControlLabel";
-import Switch from "@material-ui/core/Switch";
+import { LinearProgress } from "@material-ui/core";
 const togpx = require("togpx");
 
-const RADI_GREEN = "#2b9847";
+const RADI_GREEN = "#00BCF2";
 
 const SOUTH_WEST = {
   lng: 10.334022,
@@ -141,6 +140,14 @@ function translateSurface(surface: string): string {
   }
 }
 
+function translateLit(lit: string): string {
+  if (lit == "no") {
+    return "Nicht beleuchtet";
+  } else {
+    return "Beleuchtet";
+  }
+}
+
 function App() {
   const [startSuggestions, setStartSuggestions] = useState<
     Array<NominatimItem>
@@ -156,6 +163,10 @@ function App() {
   const [endPosition, setEndPosition] = useState<NominatimItem | null>(null);
   const [route, setRoute] = useState<null | any>();
   const [surfacesOnRoute, setSurfacesOnRoute] = useState<null | Map<
+    string,
+    number
+  >>(null);
+  const [illuminatedOnRoute, setIlluminatedOnRoute] = useState<null | Map<
     string,
     number
   >>(null);
@@ -233,11 +244,13 @@ function App() {
         .then((response) => response.text())
         .then((answer) => {
           const surfaces: Map<string, number> = new Map();
+          const illuminated: Map<string, number> = new Map();
           const parser = new DOMParser();
           const xmlDoc = parser.parseFromString(answer, "text/xml");
 
           const ways: Array<{
             surface: string | undefined;
+            lit: string | undefined;
             nodes: Array<number>;
           }> = [...xmlDoc.getElementsByTagName("way")].map((tag) => {
             const nodes: number[] = [
@@ -246,10 +259,17 @@ function App() {
             const surfaceTags = [...tag.getElementsByTagName("tag")].filter(
               (tag) => tag.getAttribute("k") === "surface"
             );
+            const litTags = [...tag.getElementsByTagName("tag")].filter(
+              (tag) => tag.getAttribute("k") === "lit"
+            );
             return {
               surface:
                 surfaceTags.length > 0
                   ? surfaceTags[0].getAttribute("v") || undefined
+                  : undefined,
+              lit:
+                litTags.length > 0
+                  ? litTags[0].getAttribute("v") || undefined
                   : undefined,
               nodes,
             };
@@ -267,16 +287,24 @@ function App() {
                 matchedWay.surface === undefined
                   ? "Unbekannt"
                   : translateSurface(matchedWay.surface);
+              const lit = matchedWay.lit == undefined ? "Unbekannt" : translateLit(matchedWay.lit);
               if (surfaces.has(surface)) {
                 const current = surfaces.get(surface) || 0;
                 surfaces.set(surface, current + item.distance);
               } else {
                 surfaces.set(surface, item.distance);
               }
+              if (illuminated.has(lit)) {
+                const current = illuminated.get(lit) || 0;
+                illuminated.set(lit, current + item.distance);
+              } else {
+                illuminated.set(lit, item.distance);
+              }
             }
           });
 
           setSurfacesOnRoute(surfaces);
+          setIlluminatedOnRoute(illuminated);
         });
     }, 1000),
     []
@@ -381,6 +409,7 @@ function App() {
   };
 
   let surfacesElement = null;
+  let illuminatedElement = null;
 
   const startMarkerRef = createRef<Marker>();
   const endMarkerRef = createRef<Marker>();
@@ -397,6 +426,23 @@ function App() {
       .concat(
         <div id="setup" className="route-meta-heading">
           Beschaffenheit
+        </div>
+      )
+      .reverse();
+  }
+
+  if (startPosition != null && endPosition != null && illuminatedOnRoute != null) {
+    illuminatedElement = [...illuminatedOnRoute.entries()]
+      .sort((a, b) => a[1] - b[1])
+      .map(([k, v]) => (
+        <div id={k} className="surface">
+          <div className="surface-name">{k}</div>
+          <div className="surface-distance">{displayDistance(v)}</div>
+        </div>
+      ))
+      .concat(
+        <div id="setup" className="route-meta-heading">
+          Straßenbeleuchtung
         </div>
       )
       .reverse();
@@ -433,7 +479,7 @@ function App() {
         lng: tuple[0],
       })
     );
-    return <Polyline positions={coords} color={RADI_GREEN}></Polyline>;
+    return <Polyline positions={coords} color="#005180"></Polyline>;
   };
 
   return (
@@ -463,8 +509,8 @@ function App() {
         ) : null}
         <div className={`routing ${menuMinimized ? "routing--minimized" : ""}`}>
           <div className="menu-toggle" onClick={toggleMenu}></div>
-          <img src="logo.png" width="320" height="154" alt="Radi Logo"></img>
-          <FormControlLabel
+          <img src="logo.png" width="320" height="100" alt="Radi Logo"></img>
+          {/* <FormControlLabel
             style={{
               margin: "0 auto",
             }}
@@ -477,7 +523,7 @@ function App() {
               />
             }
             label="ich fahre ein Rennrad"
-          />
+          /> */}
           <Autocomplete
             id="start"
             filterOptions={(x) => x}
@@ -546,6 +592,8 @@ function App() {
           />
           {routeMetaElement}
           {surfacesElement ? <div id="surfaces">{surfacesElement}</div> : null}
+          {illuminatedElement ? <div id="surfaces">{illuminatedElement}</div> : null}
+          {startPosition != null && endPosition != null && (surfacesElement == null || illuminatedElement == null || routeMetaElement == null) ? <LinearProgress /> : null}
           <Button
             variant="contained"
             color="primary"
