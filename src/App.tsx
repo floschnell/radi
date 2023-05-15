@@ -1,7 +1,7 @@
-import React, { useState, useEffect, createRef, useCallback } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import "./App.css";
 import {
-  Map as LeafletMap,
+  MapContainer as LeafletMap,
   TileLayer,
   Marker,
   Popup,
@@ -9,7 +9,7 @@ import {
 } from "react-leaflet";
 import TextField from "@material-ui/core/TextField";
 import Autocomplete from "@material-ui/lab/Autocomplete";
-import { LatLngBounds, LeafletMouseEvent } from "leaflet";
+import { LatLngBounds, LeafletEvent, LeafletMouseEvent, Map as LMap } from "leaflet";
 import { createMuiTheme, ThemeProvider } from "@material-ui/core/styles";
 import { throttle, debounce } from "lodash";
 import Button from "@material-ui/core/Button";
@@ -59,8 +59,7 @@ async function geocode(value: string): Promise<Array<NominatimItem>> {
     const response = await fetch(
       `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(
         value
-      )}&format=json&viewbox=${SOUTH_WEST.lng},${SOUTH_WEST.lat},${
-        NORTH_EAST.lng
+      )}&format=json&viewbox=${SOUTH_WEST.lng},${SOUTH_WEST.lat},${NORTH_EAST.lng
       },${NORTH_EAST.lat}&bounded=1`
     );
     return response.json();
@@ -140,6 +139,25 @@ function translateSurface(surface: string): string {
   }
 }
 
+const SURFACE_COLORS = new Map([
+  ["Asphalt", "#4682B4"],
+  ["Asphaltweg", "#ADD8E6"],
+  ["Asphaltplatten", "#B0C4DE"],
+  ["Ebener Pflasterstein", "#C0C0C0"],
+  ["Pflasterstein", "#A9A9A9"],
+  ["Kopfsteinpflaster", "#808080"],
+  ["Uneben", "#FFA07A"],
+  ["Guter Waldweg", "#006400"],
+  ["Kies", "#708090"],
+  ["Schotter", "#696969"],
+  ["Erdboden", "#CD853F"],
+  ["Gras", "#228B22"],
+  ["Betonstein auf Gras", "#8FBC8F"],
+  ["Matsch", "#BDB76B"],
+  ["Sand", "#F4A460"],
+  ["Holzschnitzel", "#DEB887"],
+]);
+
 function translateLit(lit: string): string {
   if (lit == "no") {
     return "Nicht beleuchtet";
@@ -147,6 +165,11 @@ function translateLit(lit: string): string {
     return "Beleuchtet";
   }
 }
+
+const LIT_COLORS = new Map([
+  ["Beleuchtet", "yellow"],
+  ["Nicht beleuchtet", "black"],
+]);
 
 function App() {
   const [startSuggestions, setStartSuggestions] = useState<
@@ -170,6 +193,8 @@ function App() {
     string,
     number
   >>(null);
+  const [illuminatedPaths, setIlluminatedPaths] = useState<null | Map<string, Array<Array<{ lat: number, lon: number }>>>>(null);
+  const [surfacePaths, setSurfacePaths] = useState<null | Map<string, Array<Array<{ lat: number, lon: number }>>>>(null);
   const [routeMetadata, setRouteMetadata] = useState<RouteMetadata | null>(
     null
   );
@@ -180,7 +205,19 @@ function App() {
     lng: number;
   } | null>(null);
   const [menuMinimized, setMenuMinimized] = useState<boolean>(false);
-  const [isRoadbike, setIsRoadbike] = useState<boolean>(false);
+  const [hightlightLit, setHightlightLit] = useState<string | null>(null);
+  const [hightlightSurface, setHightlightSurface] = useState<string | null>(null);
+  const [map, setMap] = useState<LMap | null>(null);
+
+  useEffect(() => {
+    if (map != null) {
+      map.on("contextmenu", (e: LeafletMouseEvent) => {
+        openContextMenu(e);
+      });
+      map.on("movestart", () => closeContextMenu());
+      map.on("click", () => closeContextMenu());
+    }
+  }, [map])
 
   const autocompleteStart = useCallback(
     debounce((value) => {
@@ -199,17 +236,17 @@ function App() {
   useEffect(() => autocompleteStart(startValue), [startValue]);
   useEffect(() => autocompleteEnd(endValue), [endValue]);
 
-  const dragStartPosition = throttle(() => {
-    const pos = startMarkerRef.current?.leafletElement.getLatLng();
+  const dragStartPosition = throttle((e: LeafletEvent) => {
+    // console.log(e);
+    const pos = e.target?.getLatLng();
     if (pos) {
       routeFromHere(pos);
     }
   }, 500);
 
-  const dragEndPosition = throttle(() => {
-    console.log("drag!");
-    const pos = endMarkerRef.current?.leafletElement.getLatLng();
-    console.log("pos", pos);
+  const dragEndPosition = throttle((e: LeafletEvent) => {
+    // console.log(e);
+    const pos = e.target?.getLatLng();
     if (pos) {
       routeToHere(pos);
     }
@@ -234,75 +271,69 @@ function App() {
         })
         .filter((i: QueryItem | null) => i !== null);
 
-      const queryData = `node(id:${nodes.join(",")});way(bn);out;`;
+      const queryData = `[out:json][timeout:25];node(id:${nodes.join(",")});way(bn);(._;>;);out;`;
 
       fetch("https://overpass-api.de/api/interpreter", {
         method: "POST",
         headers: { "Content-Type": "form/multipart" },
         body: `data=${encodeURIComponent(queryData)}`,
       })
-        .then((response) => response.text())
+        .then((response) => response.json())
         .then((answer) => {
           const surfaces: Map<string, number> = new Map();
           const illuminated: Map<string, number> = new Map();
-          const parser = new DOMParser();
-          const xmlDoc = parser.parseFromString(answer, "text/xml");
 
-          const ways: Array<{
-            surface: string | undefined;
-            lit: string | undefined;
-            nodes: Array<number>;
-          }> = [...xmlDoc.getElementsByTagName("way")].map((tag) => {
-            const nodes: number[] = [
-              ...tag.getElementsByTagName("nd"),
-            ].map((node) => parseInt(node.getAttribute("ref") || "0"));
-            const surfaceTags = [...tag.getElementsByTagName("tag")].filter(
-              (tag) => tag.getAttribute("k") === "surface"
-            );
-            const litTags = [...tag.getElementsByTagName("tag")].filter(
-              (tag) => tag.getAttribute("k") === "lit"
-            );
-            return {
-              surface:
-                surfaceTags.length > 0
-                  ? surfaceTags[0].getAttribute("v") || undefined
-                  : undefined,
-              lit:
-                litTags.length > 0
-                  ? litTags[0].getAttribute("v") || undefined
-                  : undefined,
-              nodes,
-            };
-          });
+          const ways = answer.elements.filter((e: any) => e.type === 'way');
+          const nodesById = Object.fromEntries(answer.elements.filter((e: any) => e.type === 'node').map((node: any) => [node.id, node]));
+          const illuminatedPaths = new Map<string, Array<Array<{ lat: number, lon: number }>>>();
+          const surfacePaths = new Map<string, Array<Array<{ lat: number, lon: number }>>>();
 
-          queryItems.forEach((item: QueryItem) => {
-            const found = ways.filter(
-              (w) =>
-                w.nodes.some((n) => n === item.start) &&
-                w.nodes.some((n) => n === item.end)
-            );
-            if (found.length >= 1) {
-              const matchedWay = found[0];
-              const surface =
-                matchedWay.surface === undefined
-                  ? "Unbekannt"
-                  : translateSurface(matchedWay.surface);
-              const lit = matchedWay.lit == undefined ? "Unbekannt" : translateLit(matchedWay.lit);
-              if (surfaces.has(surface)) {
-                const current = surfaces.get(surface) || 0;
-                surfaces.set(surface, current + item.distance);
+          for (const item of queryItems) {
+            const wayContainingNodes = ways.find((way: any) => way.nodes.includes(item.start) && way.nodes.includes(item.end));
+            const surface = wayContainingNodes.tags.surface === undefined ? "Unbekannt" : translateSurface(wayContainingNodes.tags.surface);
+            const lit = wayContainingNodes.tags.lit === undefined ? "Unbekannt" : translateLit(wayContainingNodes.tags.lit);
+            const startNode = nodesById[item.start];
+            const endNode = nodesById[item.end];
+            const path = [startNode, endNode];
+
+            if (illuminatedPaths.has(lit)) {
+              const lastPoint = illuminatedPaths.get(lit)?.slice(-1)?.[0]?.slice(-1)?.[0];
+              if (lastPoint !== undefined && lastPoint.lat === startNode.lat && lastPoint.lon === startNode.lon) {
+                illuminatedPaths.get(lit)?.slice(-1)?.[0].push(endNode);
               } else {
-                surfaces.set(surface, item.distance);
+                illuminatedPaths.get(lit)?.push(path);
               }
-              if (illuminated.has(lit)) {
-                const current = illuminated.get(lit) || 0;
-                illuminated.set(lit, current + item.distance);
-              } else {
-                illuminated.set(lit, item.distance);
-              }
+            } else {
+              illuminatedPaths.set(lit, [path]);
             }
-          });
 
+            if (surfacePaths.has(surface)) {
+              const lastPoint = surfacePaths.get(surface)?.slice(-1)?.[0]?.slice(-1)?.[0];
+              if (lastPoint !== undefined && lastPoint.lat === startNode.lat && lastPoint.lon === startNode.lon) {
+                surfacePaths.get(surface)?.slice(-1)?.[0].push(endNode);
+              } else {
+                surfacePaths.get(surface)?.push(path);
+              }
+            } else {
+              surfacePaths.set(surface, [path]);
+            }
+
+            if (surfaces.has(surface)) {
+              const current = surfaces.get(surface) || 0;
+              surfaces.set(surface, current + item.distance);
+            } else {
+              surfaces.set(surface, item.distance);
+            }
+
+            if (illuminated.has(lit)) {
+              const current = illuminated.get(lit) || 0;
+              illuminated.set(lit, current + item.distance);
+            } else {
+              illuminated.set(lit, item.distance);
+            }
+          }
+          setIlluminatedPaths(illuminatedPaths);
+          setSurfacePaths(surfacePaths);
           setSurfacesOnRoute(surfaces);
           setIlluminatedOnRoute(illuminated);
         });
@@ -311,13 +342,10 @@ function App() {
   );
 
   const calculateRoute = useCallback(
-    throttle((startPosition, endPosition, isRoadbike: boolean) => {
+    throttle((startPosition, endPosition) => {
       if (startPosition && endPosition) {
         fetch(
-          `https://routing.floschnell.de/route/v1/${
-            isRoadbike ? "roadbike" : "citybike"
-          }/${startPosition.lon},${startPosition.lat}%3b${endPosition.lon},${
-            endPosition.lat
+          `https://routing.floschnell.de/route/v1/bike/${startPosition.lon},${startPosition.lat}%3b${endPosition.lon},${endPosition.lat
           }%3Foverview=full&alternatives=true&steps=true&geometries=geojson&annotations=true`
         )
           .then((response) => response.json())
@@ -327,11 +355,14 @@ function App() {
               distance: results.routes[0].distance as number,
               duration: results.routes[0].duration as number,
             });
+            setIlluminatedPaths(null);
+            setSurfacePaths(null);
             setSurfacesOnRoute(null);
+            setIlluminatedOnRoute(null);
             calculateRouteSurface(results);
           });
       }
-    }, 200),
+    }, 500),
     []
   );
 
@@ -398,54 +429,34 @@ function App() {
     closeContextMenu();
   }, []);
 
-  useEffect(() => calculateRoute(startPosition, endPosition, isRoadbike), [
+  useEffect(() => calculateRoute(startPosition, endPosition), [
     startPosition,
     endPosition,
-    isRoadbike,
   ]);
-
-  const handleRoadbikeSwitch = (e: any) => {
-    setIsRoadbike(e.target.checked);
-  };
 
   let surfacesElement = null;
   let illuminatedElement = null;
 
-  const startMarkerRef = createRef<Marker>();
-  const endMarkerRef = createRef<Marker>();
-
   if (startPosition != null && endPosition != null && surfacesOnRoute != null) {
-    surfacesElement = [...surfacesOnRoute.entries()]
+    surfacesElement = <div style={{ display: 'flex', height: '30px' }}>{
+      [...surfacesOnRoute.entries()]
       .sort((a, b) => a[1] - b[1])
       .map(([k, v]) => (
-        <div id={k} className="surface">
-          <div className="surface-name">{k}</div>
-          <div className="surface-distance">{displayDistance(v)}</div>
-        </div>
+        <div onMouseEnter={() => setHightlightSurface(k)} onMouseLeave={() => setHightlightSurface(null)} id={k} style={{ background: SURFACE_COLORS.get(k) || 'gray', flexGrow: v / ([...surfacesOnRoute.values()].reduce((p, v) => p + v, 0)) * 100 }}></div>
       ))
-      .concat(
-        <div id="setup" className="route-meta-heading">
-          Beschaffenheit
-        </div>
-      )
-      .reverse();
+      .reverse()
+    }</div>;
   }
 
   if (startPosition != null && endPosition != null && illuminatedOnRoute != null) {
-    illuminatedElement = [...illuminatedOnRoute.entries()]
-      .sort((a, b) => a[1] - b[1])
-      .map(([k, v]) => (
-        <div id={k} className="surface">
-          <div className="surface-name">{k}</div>
-          <div className="surface-distance">{displayDistance(v)}</div>
-        </div>
-      ))
-      .concat(
-        <div id="setup" className="route-meta-heading">
-          Straßenbeleuchtung
-        </div>
-      )
-      .reverse();
+    illuminatedElement = <div style={{ display: 'flex', height: '30px', marginTop: 0 }}>{
+        [...illuminatedOnRoute.entries()]
+        .sort((a, b) => a[1] - b[1])
+        .map(([k, v]) => (
+          <div onMouseEnter={() => setHightlightLit(k)} onMouseLeave={() => setHightlightLit(null)} id={k} style={{ background: LIT_COLORS.get(k) || 'gray', flexGrow: v / ([...illuminatedOnRoute.values()].reduce((p, v) => p + v, 0)) * 100 }}></div>
+        ))
+        .reverse()
+      }</div>;
   }
 
   const routeMetaElement = routeMetadata ? (
@@ -482,6 +493,46 @@ function App() {
     return <Polyline positions={coords} color="#005180"></Polyline>;
   };
 
+  const drawIlluminated = () => {
+    return illuminatedPaths == null ? [] : [...illuminatedPaths.entries()]
+      .filter(([key, _]) => key === hightlightLit)
+      .map(([key, entry]) => entry.map(
+        (litPath) => <React.Fragment>
+          <Polyline color={'white'} weight={6} positions={
+            litPath.map(
+              (point) => ({ lat: point.lat, lng: point.lon })
+            )
+          }></Polyline>
+          <Polyline color={LIT_COLORS.get(key) || 'gray'} weight={4} positions={
+            litPath.map(
+              (point) => ({ lat: point.lat, lng: point.lon })
+            )
+          }></Polyline>
+        </React.Fragment>
+      )
+      );
+  };
+
+  const drawSurfaces = () => {
+    return surfacePaths == null ? [] : [...surfacePaths.entries()]
+      .filter(([key, _]) => key === hightlightSurface)
+      .map(([key, entry]) => entry.map(
+        (surfacePath) => <React.Fragment>
+          <Polyline color={'white'} weight={6} positions={
+            surfacePath.map(
+              (point) => ({ lat: point.lat, lng: point.lon })
+            )
+          }></Polyline>
+          <Polyline color={SURFACE_COLORS.get(key) || 'gray'} weight={4} positions={
+            surfacePath.map(
+              (point) => ({ lat: point.lat, lng: point.lon })
+            )
+          }></Polyline>
+        </React.Fragment>
+      )
+      );
+  };
+
   return (
     <ThemeProvider theme={RADI_THEME}>
       <div className="App">
@@ -510,20 +561,6 @@ function App() {
         <div className={`routing ${menuMinimized ? "routing--minimized" : ""}`}>
           <div className="menu-toggle" onClick={toggleMenu}></div>
           <img src="logo.png" width="320" height="100" alt="Radi Logo"></img>
-          {/* <FormControlLabel
-            style={{
-              margin: "0 auto",
-            }}
-            control={
-              <Switch
-                checked={isRoadbike}
-                onChange={handleRoadbikeSwitch}
-                name="isRoadbike"
-                color="primary"
-              />
-            }
-            label="ich fahre ein Rennrad"
-          /> */}
           <Autocomplete
             id="start"
             filterOptions={(x) => x}
@@ -546,7 +583,7 @@ function App() {
               !option ? "" : option.display_name
             }
             getOptionSelected={(a, b) => a.place_id === b.place_id}
-            style={{ width: 300 }}
+            style={{ width: 300, marginTop: '20px' }}
             noOptionsText={"Für Vorschläge Adresse eingeben ..."}
             renderInput={(params) => (
               <TextField
@@ -591,8 +628,8 @@ function App() {
             )}
           />
           {routeMetaElement}
-          {surfacesElement ? <div id="surfaces">{surfacesElement}</div> : null}
-          {illuminatedElement ? <div id="surfaces">{illuminatedElement}</div> : null}
+          {surfacesElement}
+          {illuminatedElement}
           {startPosition != null && endPosition != null && (surfacesElement == null || illuminatedElement == null || routeMetaElement == null) ? <LinearProgress /> : null}
           <Button
             variant="contained"
@@ -607,11 +644,10 @@ function App() {
           className="map"
           center={[48.134991, 11.584225]}
           zoom={13}
+          zoomAnimation={true}
           zoomControl={false}
           maxBounds={MAP_BOUNDS}
-          oncontextmenu={openContextMenu}
-          onViewportChange={closeContextMenu}
-          onclick={closeContextMenu}
+          ref={setMap}
         >
           <TileLayer
             attribution='&amp;copy <a href="http://osm.org/copyright">OpenStreetMap</a> contributors'
@@ -620,8 +656,9 @@ function App() {
           {startPosition != null ? (
             <Marker
               draggable={true}
-              ondrag={dragStartPosition}
-              ref={startMarkerRef}
+              eventHandlers={{
+                drag: (e) => dragStartPosition(e),
+              }}
               position={[
                 parseFloat(startPosition.lat),
                 parseFloat(startPosition.lon),
@@ -633,8 +670,9 @@ function App() {
           {endPosition != null ? (
             <Marker
               draggable={true}
-              ondrag={dragEndPosition}
-              ref={endMarkerRef}
+              eventHandlers={{
+                drag: (e) => dragEndPosition(e),
+              }}
               position={[
                 parseFloat(endPosition.lat),
                 parseFloat(endPosition.lon),
@@ -646,6 +684,8 @@ function App() {
           {route != null && startPosition != null && endPosition != null
             ? drawRoute(route)
             : null}
+          {illuminatedPaths != null && startPosition != null && endPosition != null ? drawIlluminated() : null}
+          {surfacePaths != null && startPosition != null && endPosition != null ? drawSurfaces() : null}
         </LeafletMap>
       </div>
     </ThemeProvider>
